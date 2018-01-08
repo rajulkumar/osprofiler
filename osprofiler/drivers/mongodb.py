@@ -13,9 +13,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import oslo_messaging as messaging
+from oslo_config import cfg
 from osprofiler.drivers import base
 from osprofiler import exc
 
+conf=cfg.CONF
 
 class MongoDB(base.Driver):
     def __init__(self, connection_str, db_name="osprofiler", project=None,
@@ -24,6 +27,28 @@ class MongoDB(base.Driver):
 
         super(MongoDB, self).__init__(connection_str, project=project,
                                       service=service, host=host)
+        #try:
+        #    from pymongo import MongoClient
+        #except ImportError:
+        #    raise exc.CommandError(
+        #        "To use this command, you should install "
+        #        "'pymongo' manually. Use command:\n "
+        #        "'pip install pymongo'.")
+
+        #client = MongoClient(self.connection_str, connect=False)
+        #self.db = client[db_name]
+
+	url="rabbit://guest:guest@192.168.100.13:5672"
+	transport=messaging.get_transport(conf,url)
+
+	target = messaging.Target(topic='osprofiler',server='127.0.0.1')
+	self.rpcclient= messaging.RPCClient(transport,target)
+
+    @classmethod
+    def get_name(cls):
+        return "mongodb"
+    
+    def db_conn(self):
         try:
             from pymongo import MongoClient
         except ImportError:
@@ -33,13 +58,9 @@ class MongoDB(base.Driver):
                 "'pip install pymongo'.")
 
         client = MongoClient(self.connection_str, connect=False)
-        self.db = client[db_name]
+        self.db = client['osprofiler']
 
-    @classmethod
-    def get_name(cls):
-        return "mongodb"
-
-    def notify(self, info):
+    def db_notify(self, info):
         """Send notifications to MongoDB.
 
         :param info:  Contains information about trace element.
@@ -55,10 +76,14 @@ class MongoDB(base.Driver):
                       tree of trace elements, which simplify analyze of trace.
 
         """
+        self.db_conn()
         data = info.copy()
         data["project"] = self.project
         data["service"] = self.service
         self.db.profiler.insert_one(data)
+    
+    def notify(self,info):
+        self.rpcclient.cast({},'processTrace',trace=info)
 
     def list_traces(self, query, fields=[]):
         """Returns array of all base_id fields that match the given criteria
@@ -66,6 +91,7 @@ class MongoDB(base.Driver):
         :param query: dict that specifies the query criteria
         :param fields: iterable of strings that specifies the output fields
         """
+        self.db_conn()
         ids = self.db.profiler.find(query).distinct("base_id")
         out_format = {"base_id": 1, "timestamp": 1, "_id": 0}
         out_format.update({i: 1 for i in fields})
@@ -77,6 +103,7 @@ class MongoDB(base.Driver):
 
         :param base_id: Base id of trace elements.
         """
+        self.db_conn()
         for n in self.db.profiler.find({"base_id": base_id}, {"_id": 0}):
             trace_id = n["trace_id"]
             parent_id = n["parent_id"]
